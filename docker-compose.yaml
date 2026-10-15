@@ -1,0 +1,55 @@
+# Развёртывание на VPS за общим Caddy — обычно через ./deploy.sh.
+#
+#   sudo docker compose up -d --build
+#
+
+name: rst-metrology-mcp
+
+services:
+  rst-metrology-mcp:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-docker}
+
+    container_name: rst-metrology-mcp
+
+    restart: unless-stopped
+
+    env_file:
+      - ./deploy/rst-metrology-mcp.env
+
+    # docker compose поднимает сервер как постоянно работающий сервис,
+    # а не подпроцесс Claude — поэтому явно просим сетевой режим:
+    # без --http процесс уйдёт в stdio и зависнет, читая пустой stdin.
+    command: ["--http", "0.0.0.0:8083"]
+
+    # Наружу порт не выставлен: снаружи виден только Caddy, а он ходит
+    # сюда по сети mcp-network. Для отладки с самой машины:
+    #
+    #   ports:
+    #     - "127.0.0.1:8083:8083"
+    expose:
+      - "8083"
+
+    # Хранилище OAuth: подключённые устройства и их токены. Том
+    # переживает пересборку — без него каждое обновление отключало бы
+    # все устройства разом.
+    volumes:
+      - oauth:/var/lib/rst-metrology-mcp
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - mcp-network
+
+volumes:
+  oauth:
+
+networks:
+  mcp-network:
+    external: true

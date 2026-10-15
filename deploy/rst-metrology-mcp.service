@@ -1,0 +1,58 @@
+# systemd-юнит для сетевого режима без Docker.
+#
+#   sudo cp deploy/rst-metrology-mcp.service /etc/systemd/system/
+#   sudo cp deploy/rst-metrology-mcp.env /etc/rst-metrology-mcp.env
+#   sudo chmod 600 /etc/rst-metrology-mcp.env      # там токены и хеш пароля
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin rstmcp
+#   rst-metrology-mcp --hash-password    # и положить в env-файл
+#   sudo systemctl enable --now rst-metrology-mcp
+#
+
+[Unit]
+Description=MCP-сервер для ФГИС «Аршин» (РСТ-метрология)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rstmcp
+Group=rstmcp
+
+# Секреты — в файле с правами 600, а не в командной строке:
+# аргументы процесса видны любому пользователю через ps.
+EnvironmentFile=/etc/rst-metrology-mcp.env
+
+ExecStart=/usr/local/bin/rst-metrology-mcp --http 127.0.0.1:8083
+
+# Хранилище OAuth: клиенты и токены должны переживать перезапуск,
+# иначе каждый рестарт отключает все устройства.
+StateDirectory=rst-metrology-mcp
+StateDirectoryMode=0700
+
+Restart=always
+RestartSec=5s
+
+# Слушаем только петлю: наружу выпускает обратный прокси, который
+# занимается TLS. Порт 8083 не должен быть виден из интернета напрямую.
+
+# Ограничения прав: сервису нужен только исходящий HTTPS к ФГИС.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
