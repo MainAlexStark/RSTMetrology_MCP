@@ -99,6 +99,10 @@ func Hint(err error) string {
 		return networkHint
 
 	case KindBadResponse:
+		if looksJSON([]byte(e.Body)) {
+			return "ФГИС ответила JSON неожиданной формы — вероятно, изменился формат API.\n" +
+				"Сверьте фрагмент ответа выше с разбором в arshin/client.go."
+		}
 		return "ФГИС вернула не JSON — обычно это HTML-заглушка: техработы или\n" +
 			"блокировка адреса. Откройте https://fgis.gost.ru/fundmetrology/cm/ с той же\n" +
 			"машины, где запущен сервер, и посмотрите, что там показывается."

@@ -230,3 +230,31 @@ func TestParseDate(t *testing.T) {
 		}
 	}
 }
+
+// Карточка типа /mit/{uuid} приходит без обёртки result — сразу {"general": …}.
+func TestTypeCardWithoutResultEnvelope(t *testing.T) {
+	const body = `{"general":{"mit_uuid":"u1","number":"16078-05","title":"Счетчики холодной и горячей воды"}}`
+	c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+	raw, err := c.Type(context.Background(), "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != body {
+		t.Errorf("карточка %s", raw)
+	}
+}
+
+func TestTypeCardWithResultEnvelope(t *testing.T) {
+	c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"result":{"general":{"number":"1-01"}}}`))
+	})
+	raw, err := c.Type(context.Background(), "u2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"general":{"number":"1-01"}}` {
+		t.Errorf("карточка %s", raw)
+	}
+}

@@ -241,15 +241,34 @@ func (c *HTTPClient) getResult(ctx context.Context, path string, q url.Values, o
 	if err != nil {
 		return err
 	}
-	var env envelope
-	if err := json.Unmarshal(body, &env); err != nil || len(env.Result) == 0 || string(env.Result) == "null" {
-		return &APIError{Kind: KindBadResponse, Path: path, Body: snippet(body),
-			Err: errors.New("в ответе нет поля result")}
+	payload, err := unwrap(body)
+	if err != nil {
+		return &APIError{Kind: KindBadResponse, Path: path, Body: snippet(body), Err: err}
 	}
-	if err := json.Unmarshal(env.Result, out); err != nil {
-		return &APIError{Kind: KindBadResponse, Path: path, Body: snippet(env.Result), Err: err}
+	if err := json.Unmarshal(payload, out); err != nil {
+		return &APIError{Kind: KindBadResponse, Path: path, Body: snippet(payload), Err: err}
 	}
 	return nil
+}
+
+// unwrap снимает обёртку {"result": …}. Часть методов (карточка типа
+// /mit/{uuid}) отдаёт объект без обёртки, сразу {"general": …} — тогда
+// берётся всё тело.
+func unwrap(body []byte) (json.RawMessage, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, errors.New("ответ не JSON-объект")
+	}
+	if r, ok := obj["result"]; ok {
+		if len(r) == 0 || string(r) == "null" {
+			return nil, errors.New("поле result пустое")
+		}
+		return r, nil
+	}
+	if len(obj) == 0 {
+		return nil, errors.New("пустой ответ")
+	}
+	return json.RawMessage(body), nil
 }
 
 // get выполняет запрос с паузой и повторами.
