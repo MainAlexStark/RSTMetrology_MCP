@@ -30,11 +30,18 @@ type VRIQuery struct {
 }
 
 // MITQuery — фильтры поиска утверждённых типов СИ (GET /mit).
+//
+// Строковые фильтры ФГИС сравнивает с целыми словами без учёта регистра;
+// для поиска по части слова нужна звёздочка («*бетар*»). Слова одного
+// фильтра объединяются через ИЛИ.
 type MITQuery struct {
-	Search string // search — номер в реестре, наименование, обозначение, изготовитель
-	Rows   int
-	Start  int
-	Extra  map[string]string
+	Search        string // search — по всем полям: номер, наименование, обозначение, изготовитель
+	Title         string // title — наименование типа
+	Notation      string // notation — обозначение типа
+	Manufacturers string // manufacturers — изготовитель (вместе с адресом)
+	Rows          int
+	Start         int
+	Extra         map[string]string
 }
 
 // VRIItem — строка списка поверок.

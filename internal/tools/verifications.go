@@ -16,13 +16,15 @@ func CardURL(vriID string) string {
 
 // searchResult — ответ search_verifications.
 type searchResult struct {
-	Count     int              `json:"count"`
-	Start     int              `json:"start"`
-	Returned  int              `json:"returned"`
-	NextStart *int             `json:"next_start,omitempty"`
-	Period    string           `json:"period"`
-	Items     []arshin.VRIItem `json:"items"`
-	Note      string           `json:"_note,omitempty"`
+	Count      *int              `json:"count,omitempty"`
+	Candidates int               `json:"candidates"`
+	Sent       map[string]string `json:"sent_to_fgis,omitempty"`
+	Start      int               `json:"start"`
+	Returned   int               `json:"returned"`
+	NextStart  *int              `json:"next_start,omitempty"`
+	Period     string            `json:"period"`
+	Items      []arshin.VRIItem  `json:"items"`
+	Note       string            `json:"_note,omitempty"`
 }
 
 // RegisterVerifications добавляет инструменты поверок.
@@ -37,13 +39,13 @@ func (r *Registry) RegisterVerifications() {
 			"(при заданном mi_number сервер сам берёт последние 10 лет). " +
 			"Для вопроса «действует ли поверка прибора N» удобнее check_instrument, для подробностей — get_verification.",
 		Schema: schema(obj{
-			"search":          str("Полнотекстовый поиск по записи; допускает * как шаблон, например «ВКТ-7 655*»"),
+			"search":          str("Поиск по всем полям записи: любые слова в любом порядке, по части слова, без учёта регистра; найдутся записи, где есть все слова. Например «бетар сгв 2015», «единица манометр». * и ? — шаблон"),
 			"mit_number":      str("Регистрационный номер типа СИ в реестре, например 16078-05"),
-			"mit_title":       str("Наименование типа СИ, например «Счетчики холодной и горячей воды»"),
-			"mit_notation":    str("Обозначение типа СИ, например «СГВ-15»"),
-			"mi_modification": str("Модификация СИ"),
-			"mi_number":       str("Заводской номер экземпляра"),
-			"org_title":       str("Организация-поверитель (часть названия)"),
+			"mit_title":       str("Наименование типа СИ или его слова, по части слова: «счетчики воды», «манометр»"),
+			"mit_notation":    str("Обозначение типа СИ, по части: «СГВ-15», «ВКТ»"),
+			"mi_modification": str("Модификация СИ, по части"),
+			"mi_number":       str("Заводской номер экземпляра — точно; для части номера используйте * («*4860*») или search"),
+			"org_title":       str("Организация-поверитель, любые слова названия: «единица измерения», «кировский цсм»"),
 			"year":            num("Год поверки"),
 			"date_from":       str("Поверки начиная с даты, YYYY-MM-DD"),
 			"date_to":         str("Поверки по дату включительно, YYYY-MM-DD"),
@@ -58,16 +60,42 @@ func (r *Registry) RegisterVerifications() {
 			if err != nil {
 				return nil, err
 			}
-			page, err := r.fgis.SearchVerifications(ctx, q)
+			plan := newPlan(q.Search, map[string]string{
+				"mit_title": q.MITTitle, "mit_notation": q.MITNotation,
+				"org_title": q.OrgTitle, "mi_modification": q.MIModification,
+			})
+			fetch := func(ctx context.Context, search string, start, rows int) (int, []arshin.VRIItem, error) {
+				qq := q
+				qq.Search, qq.Start, qq.Rows = search, start, rows
+				qq.MITTitle, qq.MITNotation = plan.fields["mit_title"], plan.fields["mit_notation"]
+				qq.OrgTitle, qq.MIModification = plan.fields["org_title"], plan.fields["mi_modification"]
+				page, err := r.fgis.SearchVerifications(ctx, qq)
+				if err != nil {
+					return 0, nil, err
+				}
+				return page.Count, page.Items, nil
+			}
+			res, err := run(ctx, plan, q.Start, q.Rows, fetch, vriText)
 			if err != nil {
 				return nil, err
 			}
 			out := searchResult{
-				Count: page.Count, Start: q.Start, Returned: len(page.Items),
-				Period: period, Items: page.Items, Note: note,
+				Candidates: res.Candidates, Start: q.Start, Returned: len(res.Items),
+				Period: period, Items: res.Items, Note: joinNotes(note, planNote(plan, res)),
 			}
-			if next := q.Start + len(page.Items); len(page.Items) > 0 && next < page.Count {
-				out.NextStart = &next
+			plan.search = res.Search
+			if sent := plan.remote(); len(sent) > 0 {
+				out.Sent = sent
+			}
+			switch {
+			case !res.Filtered:
+				out.Count = &res.Candidates
+			case res.NextStart < 0 && q.Start == 0:
+				n := len(res.Items)
+				out.Count = &n
+			}
+			if res.NextStart >= 0 {
+				out.NextStart = &res.NextStart
 			}
 			if out.Items == nil {
 				out.Items = []arshin.VRIItem{}
@@ -190,6 +218,26 @@ func (r *Registry) vriQuery(a Args) (arshin.VRIQuery, string, string, error) {
 		period += " по " + q.DateTo
 	}
 	return q, period, note, nil
+}
+
+// vriText — поля строки поверки для проверки слов запроса.
+func vriText(it arshin.VRIItem) map[string]string {
+	return map[string]string{
+		"org_title": it.OrgTitle, "mit_number": it.MITNumber, "mit_title": it.MITTitle,
+		"mit_notation": it.MITNotation, "mi_modification": it.MIModification,
+		"mi_number": it.MINumber, "result_docnum": it.ResultDocnum,
+	}
+}
+
+// joinNotes склеивает пояснения, пропуская пустые.
+func joinNotes(ns ...string) string {
+	var out []string
+	for _, n := range ns {
+		if n != "" {
+			out = append(out, n)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // lastSegment достаёт идентификатор из ссылки на карточку:

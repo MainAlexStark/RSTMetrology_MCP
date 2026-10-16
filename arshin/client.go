@@ -206,6 +206,9 @@ func (c *HTTPClient) cardRaw(ctx context.Context, id string) (json.RawMessage, e
 func (c *HTTPClient) SearchTypes(ctx context.Context, q MITQuery) (*RawPage, error) {
 	p := url.Values{}
 	set(p, "search", q.Search)
+	set(p, "title", q.Title)
+	set(p, "notation", q.Notation)
+	set(p, "manufacturers", q.Manufacturers)
 	pageParams(p, q.Rows, q.Start)
 	for k, v := range q.Extra {
 		set(p, k, v)
@@ -336,6 +339,8 @@ func (c *HTTPClient) do(ctx context.Context, path, u string) ([]byte, time.Durat
 			return nil, 0, &APIError{Kind: KindBadResponse, Status: code, Path: path, Body: snippet(body)}
 		}
 		return body, 0, nil
+	case code == http.StatusBadRequest && badParam(body) != "":
+		return nil, 0, &APIError{Kind: KindBadParam, Status: code, Path: path, Body: badParam(body)}
 	case code == http.StatusBadRequest || code == http.StatusRequestTimeout:
 		return nil, 0, &APIError{Kind: KindTooBroad, Status: code, Path: path, Body: snippet(body)}
 	case code == http.StatusNotFound:
@@ -392,6 +397,19 @@ func retryAfter(v string) time.Duration {
 		return 2 * time.Second
 	}
 	return min(time.Duration(n)*time.Second, 5*time.Second)
+}
+
+// badParam достаёт из ответа 400 сообщение ФГИС о недопустимом параметре
+// («Параметр manufacturer не допустим для запроса»). Пустая строка —
+// отказ другого рода, обычно «превышен лимит на поиск».
+func badParam(body []byte) string {
+	var r struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &r) != nil || !strings.Contains(r.Message, "не допуст") {
+		return ""
+	}
+	return r.Message
 }
 
 func looksJSON(b []byte) bool {

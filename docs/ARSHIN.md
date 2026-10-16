@@ -14,13 +14,38 @@
 | `GET /mit` | список утверждённых типов СИ |
 | `GET /mit/{mit_uuid}` | карточка типа |
 
-Ответы обёрнуты в `{"result": …}`; списки — `{"count", "start", "rows", "items": […]}`.
+Ответы обёрнуты в `{"result": …}` (кроме карточки типа); списки — `{"count", "start", "rows", "items": […]}`.
 
 ### Список поверок — параметры
 
 `search`, `mit_number`, `mit_title`, `mit_notation`, `mi_modification`, `mi_number`, `org_title`,
 `year`, `verification_date_start`, `verification_date_end`, `applicability`, `sort`, `rows` (≤100), `start`.
-Имена фильтров совпадают с именами полей ответа.
+Имена фильтров совпадают с именами полей ответа. Неизвестный параметр — HTTP 400
+`{"message": "Параметр X не допустим для запроса"}`.
+
+Строковые фильтры: совпадение с целым словом без учёта регистра, `*` и `?` — шаблон
+(`*бетар*` — по подстроке), несколько слов через пробел — ИЛИ (и в `search`, и в поле;
+`AND`, `+` не работают). `search` ищет по всем полям записи.
+
+### Список типов — параметры
+
+`search`, `title`, `notation`, `manufacturers`, `rows`, `start` (`manufacturer` — 400).
+Строка: `mit_uuid`, `number`, `title`, `notation`, `manufacturers`.
+
+### Карточка типа — форма
+
+Без обёртки `result`:
+
+```json
+{"general": {"mit_uuid": "…", "number": "16078-05", "title": "…", "notation": ["…"],
+             "valid_to": "2015-01-01", "production_type": "1"},
+ "mpi": [{"parameter": "для хол. воды", "mpi": 72, "valid_from": "2005-01-01"}],
+ "spec": [{"doc_url": "…/eapi/doc/<uuid>"}],
+ "manufacturer": [{"title": "…", "country": "РОССИЯ", "address": "…"}]}
+```
+
+`mpi` — межповерочный интервал в месяцах, может быть несколько (по параметрам);
+`valid_to` — срок действия свидетельства об утверждении типа.
 
 ### Карточка поверки — форма
 

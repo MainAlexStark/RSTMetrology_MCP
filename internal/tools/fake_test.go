@@ -25,6 +25,9 @@ type fakeFGIS struct {
 	card     func(id string) (*arshin.Card, error)
 	typePage *arshin.RawPage
 	typeCard json.RawMessage
+	// typeSearch, если задан, отвечает на поиск типов вместо typePage.
+	typeSearch  func(q arshin.MITQuery) *arshin.RawPage
+	typeQueries []arshin.MITQuery
 }
 
 func (f *fakeFGIS) SearchVerifications(_ context.Context, q arshin.VRIQuery) (*arshin.VRIPage, error) {
@@ -50,7 +53,11 @@ func (f *fakeFGIS) Verification(_ context.Context, id string, _ bool) (*arshin.C
 func (f *fakeFGIS) SearchTypes(_ context.Context, q arshin.MITQuery) (*arshin.RawPage, error) {
 	f.mu.Lock()
 	f.types = append(f.types, "search:"+q.Search)
+	f.typeQueries = append(f.typeQueries, q)
 	f.mu.Unlock()
+	if f.typeSearch != nil {
+		return f.typeSearch(q), nil
+	}
 	if f.typePage == nil {
 		return &arshin.RawPage{}, nil
 	}

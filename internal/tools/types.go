@@ -24,38 +24,67 @@ var regNumber = regexp.MustCompile(`^\d{1,6}-\d{2}$`)
 func (r *Registry) RegisterTypes() {
 	r.Add(Spec{
 		Name: "search_types",
-		Desc: "Поиск в реестре утверждённых типов средств измерений (ФГИС «Аршин», раздел «Утверждённые типы СИ»): " +
-			"по регистрационному номеру, наименованию, обозначению или изготовителю. " +
-			"Пригодится, чтобы узнать номер типа (mit_number) для check_instrument и search_verifications, " +
-			"срок действия свидетельства об утверждении типа, межповерочный интервал и методику поверки (они в get_type).",
+		Desc: "Поиск в реестре утверждённых типов средств измерений (ФГИС «Аршин», раздел «Утверждённые типы СИ»). " +
+			"search ищет по всем полям сразу — номер, наименование, обозначение, изготовитель с адресом — " +
+			"любые слова в любом порядке, по части слова, без учёта регистра: «бетар сгв», «счетчики воды чистополь». " +
+			"Пригодится, чтобы узнать номер типа (mit_number) для check_instrument и search_verifications; " +
+			"срок действия свидетельства, межповерочный интервал и методика поверки — в get_type.",
 		Schema: schema(obj{
-			"search":  str("Что искать: номер в реестре («16078-05»), наименование («счетчики воды»), обозначение («СГВ-15») или изготовитель"),
-			"rows":    rowsField(defaultRows),
-			"start":   startField(),
-			"filters": filtersField(),
+			"search":        str("Что искать по всем полям: номер в реестре («16078-05»), слова наименования, обозначение («СГВ-15»), изготовитель, город"),
+			"title":         str("Только в наименовании типа, любые слова: «счетчики воды»"),
+			"notation":      str("Только в обозначении типа: «СГВ», «ВКТ-7»"),
+			"manufacturers": str("Только в изготовителе (название, страна, адрес): «бетар», «чистополь»"),
+			"rows":          rowsField(defaultRows),
+			"start":         startField(),
+			"filters":       filtersField(),
 		}),
 		Do: func(ctx context.Context, a Args) (any, error) {
 			q := arshin.MITQuery{
-				Search: a.Str("search"),
-				Rows:   rows(a, defaultRows),
-				Start:  int(max(a.IntOr("start", 0), 0)),
-				Extra:  a.StrMap("filters"),
+				Rows:  rows(a, defaultRows),
+				Start: int(max(a.IntOr("start", 0), 0)),
+				Extra: a.StrMap("filters"),
 			}
-			if q.Search == "" && len(q.Extra) == 0 {
-				return nil, fmt.Errorf("задайте search — номер, наименование или обозначение типа")
+			plan := newPlan(a.Str("search"), map[string]string{
+				"title": a.Str("title"), "notation": a.Str("notation"), "manufacturers": a.Str("manufacturers"),
+			})
+			if plan.search == "" && len(plan.fields) == 0 && len(q.Extra) == 0 {
+				return nil, fmt.Errorf("задайте search — номер, слова наименования, обозначение или изготовителя")
 			}
-			page, err := r.fgis.SearchTypes(ctx, q)
+			fetch := func(ctx context.Context, search string, start, rows int) (int, []map[string]any, error) {
+				qq := q
+				qq.Search, qq.Start, qq.Rows = search, start, rows
+				qq.Title, qq.Notation, qq.Manufacturers = plan.fields["title"], plan.fields["notation"], plan.fields["manufacturers"]
+				page, err := r.fgis.SearchTypes(ctx, qq)
+				if err != nil {
+					return 0, nil, err
+				}
+				return page.Count, page.Items, nil
+			}
+			res, err := run(ctx, plan, q.Start, q.Rows, fetch, rawText)
 			if err != nil {
 				return nil, err
 			}
 			out := map[string]any{
-				"count":    page.Count,
-				"start":    q.Start,
-				"returned": len(page.Items),
-				"items":    nonNil(page.Items),
+				"candidates": res.Candidates,
+				"start":      q.Start,
+				"returned":   len(res.Items),
+				"items":      nonNil(res.Items),
 			}
-			if next := q.Start + len(page.Items); len(page.Items) > 0 && next < page.Count {
-				out["next_start"] = next
+			plan.search = res.Search
+			if sent := plan.remote(); len(sent) > 0 {
+				out["sent_to_fgis"] = sent
+			}
+			switch {
+			case !res.Filtered:
+				out["count"] = res.Candidates
+			case res.NextStart < 0 && q.Start == 0:
+				out["count"] = len(res.Items)
+			}
+			if res.NextStart >= 0 {
+				out["next_start"] = res.NextStart
+			}
+			if n := planNote(plan, res); n != "" {
+				out["_note"] = n
 			}
 			return out, nil
 		},
@@ -109,6 +138,26 @@ func (r *Registry) RegisterTypes() {
 			return map[string]any{"mit_uuid": uuid, "item": item, "card": json.RawMessage(raw)}, nil
 		},
 	})
+}
+
+// rawText — строковые поля записи реестра типов.
+func rawText(it map[string]any) map[string]string {
+	out := make(map[string]string, len(it))
+	for k, v := range it {
+		switch x := v.(type) {
+		case string:
+			out[k] = x
+		case []any:
+			var parts []string
+			for _, e := range x {
+				if s, ok := e.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			out[k] = strings.Join(parts, "\n")
+		}
+	}
+	return out
 }
 
 // exactType находит в выдаче строку, где какое-либо поле точно равно

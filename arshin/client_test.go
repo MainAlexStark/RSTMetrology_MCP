@@ -159,6 +159,7 @@ func TestErrorClasses(t *testing.T) {
 	}{
 		{"широкий запрос", 400, `{"error":"превышен лимит на поиск"}`, KindTooBroad, 1},
 		{"таймаут поиска", 408, ``, KindTooBroad, 1},
+		{"чужой параметр", 400, `{"status":"400 Bad Request","message":"Параметр manufacturer не допустим для запроса"}`, KindBadParam, 1},
 		{"нет записи", 404, ``, KindNotFound, 1},
 		{"частота", 429, ``, KindRateLimited, 3}, // повторы
 		{"сервер", 502, `bad gateway`, KindServer, 3},

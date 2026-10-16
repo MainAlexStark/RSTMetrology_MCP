@@ -21,6 +21,7 @@ type Kind string
 
 const (
 	KindTooBroad    Kind = "too_broad"    // 400/408: запрос слишком широкий
+	KindBadParam    Kind = "bad_param"    // 400: ФГИС не знает такого параметра
 	KindNotFound    Kind = "not_found"    // 404
 	KindRateLimited Kind = "rate_limited" // 429 после всех повторов
 	KindServer      Kind = "server"       // 5xx после всех повторов
@@ -81,6 +82,11 @@ func Hint(err error) string {
 		return "ФГИС отклонила запрос как слишком широкий («превышен лимит на поиск»).\n" +
 			"Сузьте выборку: задайте year (один год) или узкий период date_from/date_to,\n" +
 			"добавьте mit_number (номер типа в реестре) или mi_number (заводской номер)."
+
+	case KindBadParam:
+		return "ФГИС не принимает такой параметр (см. сообщение выше). Обычно это имя из\n" +
+			"аргумента filters: допустимые имена совпадают с именами полей в ответе\n" +
+			"(у поверок — mit_title, org_title…, у типов — title, notation, manufacturers)."
 
 	case KindNotFound:
 		return "Такой записи нет. Идентификатор поверки выглядит как «1-340080782» — " +
