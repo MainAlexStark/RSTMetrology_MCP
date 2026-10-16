@@ -64,11 +64,11 @@ func (r *Registry) RegisterVerifications() {
 				"mit_title": q.MITTitle, "mit_notation": q.MITNotation,
 				"org_title": q.OrgTitle, "mi_modification": q.MIModification,
 			})
-			fetch := func(ctx context.Context, search string, start, rows int) (int, []arshin.VRIItem, error) {
+			fetch := func(ctx context.Context, sent map[string]string, start, rows int) (int, []arshin.VRIItem, error) {
 				qq := q
-				qq.Search, qq.Start, qq.Rows = search, start, rows
-				qq.MITTitle, qq.MITNotation = plan.fields["mit_title"], plan.fields["mit_notation"]
-				qq.OrgTitle, qq.MIModification = plan.fields["org_title"], plan.fields["mi_modification"]
+				qq.Search, qq.Start, qq.Rows = sent[searchParam], start, rows
+				qq.MITTitle, qq.MITNotation = sent["mit_title"], sent["mit_notation"]
+				qq.OrgTitle, qq.MIModification = sent["org_title"], sent["mi_modification"]
 				page, err := r.fgis.SearchVerifications(ctx, qq)
 				if err != nil {
 					return 0, nil, err
@@ -81,11 +81,10 @@ func (r *Registry) RegisterVerifications() {
 			}
 			out := searchResult{
 				Candidates: res.Candidates, Start: q.Start, Returned: len(res.Items),
-				Period: period, Items: res.Items, Note: joinNotes(note, planNote(plan, res)),
+				Period: period, Items: res.Items, Note: joinNotes(note, planNote(res)),
 			}
-			plan.search = res.Search
-			if sent := plan.remote(); len(sent) > 0 {
-				out.Sent = sent
+			if len(res.Sent) > 0 {
+				out.Sent = res.Sent
 			}
 			switch {
 			case !res.Filtered:

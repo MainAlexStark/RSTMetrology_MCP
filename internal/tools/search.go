@@ -30,10 +30,14 @@ const (
 	// scanPages — сколько страниц по 100 кандидатов просмотреть за один
 	// вызов. С паузой 600 мс между запросами это несколько секунд.
 	scanPages = 5
-	// probeWords — сколько слов полнотекстового запроса проверять
-	// пробными запросами, выбирая самое редкое.
+	// probeWords — сколько слов одного фильтра проверять пробными
+	// запросами, выбирая самое редкое.
 	probeWords = 3
 )
+
+// searchParam — параметр полнотекстового поиска. Его слова проверяются
+// по всем полям записи, слова остальных параметров — в одноимённом поле.
+const searchParam = "search"
 
 // term — слово, которое должно найтись в записи.
 type term struct {
@@ -43,117 +47,106 @@ type term struct {
 
 // searchPlan — перестроенный запрос.
 type searchPlan struct {
-	fields  map[string]string // поле ФГИС → слово-шаблон, уходит в запрос как есть
-	search  string            // параметр search; при probe выбирается позже
-	probe   []string          // кандидаты для search: выбрать самое редкое
-	local   []term            // проверяется сервером в полученных записях
-	allFree []string          // все слова полного текста — для локальной проверки
+	words map[string][]string // параметр ФГИС → слова, от вероятно редкого к частому
+	sent  map[string]string   // параметр → шаблон, уходящий в ФГИС
 }
 
-// fetchFunc — одна страница кандидатов. search — значение параметра
-// search (поверх полей плана); строки — записи в виде «поле → текст».
-type fetchFunc[T any] func(ctx context.Context, search string, start, rows int) (count int, items []T, err error)
+// fetchFunc — одна страница кандидатов по параметрам sent.
+type fetchFunc[T any] func(ctx context.Context, sent map[string]string, start, rows int) (count int, items []T, err error)
 
 // newPlan разбирает полнотекстовый запрос и значения полей.
 func newPlan(free string, fields map[string]string) searchPlan {
-	p := searchPlan{fields: map[string]string{}}
-
-	names := make([]string, 0, len(fields))
-	for k := range fields {
-		names = append(names, k)
+	p := searchPlan{words: map[string][]string{}, sent: map[string]string{}}
+	all := map[string]string{searchParam: free}
+	for k, v := range fields {
+		all[k] = v
 	}
-	sort.Strings(names) // детерминированный порядок — ради тестов и кэша
-	for _, f := range names {
-		ws := words(fields[f])
-		if len(ws) == 0 {
-			continue
+	for k, v := range all {
+		if ws := words(v); len(ws) > 0 {
+			p.words[k] = byLength(ws)
+			p.sent[k] = pattern(p.words[k][0])
 		}
-		main := rarest(ws)
-		p.fields[f] = pattern(main)
-		for _, w := range ws {
-			if w != main {
-				p.local = append(p.local, term{field: f, word: w})
-			}
-		}
-	}
-
-	ws := words(free)
-	p.allFree = ws
-	switch len(ws) {
-	case 0:
-	case 1:
-		p.search = pattern(ws[0])
-	default:
-		p.probe = byLength(ws)
-		if len(p.probe) > probeWords {
-			p.probe = p.probe[:probeWords]
-		}
-		p.search = pattern(p.probe[0])
 	}
 	return p
 }
 
-// remote — параметры, уходящие в ФГИС (для пояснения в ответе).
-func (p searchPlan) remote() map[string]string {
-	out := map[string]string{}
-	for k, v := range p.fields {
-		out[k] = v
+// params — параметры плана в постоянном порядке: от него зависят
+// пробы, а значит и то, какие слова уйдут в ФГИС на следующей странице.
+func (p searchPlan) params() []string {
+	names := make([]string, 0, len(p.words))
+	for k := range p.words {
+		names = append(names, k)
 	}
-	if p.search != "" {
-		out["search"] = p.search
-	}
-	return out
+	sort.Strings(names)
+	return names
 }
+
+// empty — в плане нет ни одного слова.
+func (p searchPlan) empty() bool { return len(p.words) == 0 }
 
 // scanResult — итог просмотра.
 type scanResult[T any] struct {
 	Items      []T
-	Candidates int  // сколько записей нашла ФГИС по отправленным словам
-	Scanned    int  // сколько из них просмотрено
-	NextStart  int  // откуда продолжить; -1 — дальше ничего нет
-	Filtered   bool // проверялись ли слова на стороне сервера
-	Search     string
+	Candidates int               // сколько записей нашла ФГИС по отправленным словам
+	Scanned    int               // сколько из них просмотрено
+	NextStart  int               // откуда продолжить; -1 — дальше ничего нет
+	Filtered   bool              // проверялись ли слова на стороне сервера
+	Sent       map[string]string // что ушло в ФГИС
 }
 
-// run выполняет план: выбирает слово для search, запрашивает страницы
-// и оставляет записи, где нашлись все слова.
+// run выполняет план: выбирает для каждого параметра самое редкое слово,
+// запрашивает страницы и оставляет записи, где нашлись все слова.
 func run[T any](ctx context.Context, p searchPlan, start, want int,
 	fetch fetchFunc[T], text func(T) map[string]string) (scanResult[T], error) {
 
-	res := scanResult[T]{NextStart: -1}
+	sent := map[string]string{}
+	for k, v := range p.sent {
+		sent[k] = v
+	}
+	res := scanResult[T]{NextStart: -1, Sent: sent}
 
-	// Выбор самого редкого слова. Нулевой результат по любому слову
-	// означает пустой ответ на весь запрос: слова объединены через И.
-	if len(p.probe) > 1 {
+	// Пробы: по одной записи на слово, остальные параметры — как есть.
+	// Слова одного параметра объединены через И, поэтому ноль по любому
+	// из них — пустой ответ на весь запрос.
+	for _, k := range p.params() {
+		ws := p.words[k]
+		if len(ws) < 2 {
+			continue
+		}
 		best, bestCount := "", -1
-		for _, w := range p.probe {
-			n, _, err := fetch(ctx, pattern(w), 0, 1)
+		for _, w := range ws[:min(len(ws), probeWords)] {
+			sent[k] = pattern(w)
+			n, _, err := fetch(ctx, sent, 0, 1)
 			if err != nil {
 				return res, err
 			}
 			if n == 0 {
-				res.Search = pattern(w)
 				return res, nil
 			}
 			if bestCount < 0 || n < bestCount {
 				best, bestCount = w, n
 			}
 		}
-		p.search = pattern(best)
+		sent[k] = pattern(best)
 	}
-	res.Search = p.search
 
-	// Слова полного текста, кроме отправленного, — локально по всем полям.
-	local := append([]term(nil), p.local...)
-	for _, w := range p.allFree {
-		if pattern(w) != p.search {
-			local = append(local, term{word: w})
+	// Остальные слова проверяются на стороне сервера.
+	var local []term
+	for _, k := range p.params() {
+		field := k
+		if k == searchParam {
+			field = ""
+		}
+		for _, w := range p.words[k] {
+			if pattern(w) != sent[k] {
+				local = append(local, term{field: field, word: w})
+			}
 		}
 	}
 
 	if len(local) == 0 {
 		// Всё проверила ФГИС — обычная постраничная выдача.
-		n, items, err := fetch(ctx, p.search, start, want)
+		n, items, err := fetch(ctx, sent, start, want)
 		if err != nil {
 			return res, err
 		}
@@ -167,7 +160,7 @@ func run[T any](ctx context.Context, p searchPlan, start, want int,
 	res.Filtered = true
 	offset := start
 	for page := 0; page < scanPages; page++ {
-		n, items, err := fetch(ctx, p.search, offset, 100)
+		n, items, err := fetch(ctx, sent, offset, 100)
 		if err != nil {
 			return res, err
 		}
@@ -304,35 +297,29 @@ func byLength(ws []string) []string {
 	return out
 }
 
-// rarest — слово для отправки в поле без пробных запросов.
-func rarest(ws []string) string { return byLength(ws)[0] }
-
 // planNote объясняет модели, что сделано с запросом.
-func planNote[T any](p searchPlan, r scanResult[T]) string {
+func planNote[T any](r scanResult[T]) string {
 	if !r.Filtered {
 		return ""
 	}
-	note := fmt.Sprintf("ФГИС объединяет слова через ИЛИ, поэтому в неё ушло по одному слову на фильтр (%s), "+
+	note := fmt.Sprintf("ФГИС объединяет слова через ИЛИ, поэтому в неё ушло по одному, самому редкому слову на фильтр (%s), "+
 		"а остальные слова сервер проверил сам. Просмотрено кандидатов: %d из %d.",
-		describe(p, r.Search), r.Scanned, r.Candidates)
+		describe(r.Sent), r.Scanned, r.Candidates)
 	if r.NextStart >= 0 {
 		note += fmt.Sprintf(" Есть ещё — продолжите с start=%d.", r.NextStart)
 	}
 	return note
 }
 
-func describe(p searchPlan, search string) string {
-	var parts []string
-	if search != "" {
-		parts = append(parts, "search="+search)
-	}
-	names := make([]string, 0, len(p.fields))
-	for k := range p.fields {
+func describe(sent map[string]string) string {
+	names := make([]string, 0, len(sent))
+	for k := range sent {
 		names = append(names, k)
 	}
 	sort.Strings(names)
+	parts := make([]string, 0, len(names))
 	for _, k := range names {
-		parts = append(parts, k+"="+p.fields[k])
+		parts = append(parts, k+"="+sent[k])
 	}
 	return strings.Join(parts, ", ")
 }

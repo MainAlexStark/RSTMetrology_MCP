@@ -47,13 +47,13 @@ func (r *Registry) RegisterTypes() {
 			plan := newPlan(a.Str("search"), map[string]string{
 				"title": a.Str("title"), "notation": a.Str("notation"), "manufacturers": a.Str("manufacturers"),
 			})
-			if plan.search == "" && len(plan.fields) == 0 && len(q.Extra) == 0 {
+			if plan.empty() && len(q.Extra) == 0 {
 				return nil, fmt.Errorf("задайте search — номер, слова наименования, обозначение или изготовителя")
 			}
-			fetch := func(ctx context.Context, search string, start, rows int) (int, []map[string]any, error) {
+			fetch := func(ctx context.Context, sent map[string]string, start, rows int) (int, []map[string]any, error) {
 				qq := q
-				qq.Search, qq.Start, qq.Rows = search, start, rows
-				qq.Title, qq.Notation, qq.Manufacturers = plan.fields["title"], plan.fields["notation"], plan.fields["manufacturers"]
+				qq.Search, qq.Start, qq.Rows = sent[searchParam], start, rows
+				qq.Title, qq.Notation, qq.Manufacturers = sent["title"], sent["notation"], sent["manufacturers"]
 				page, err := r.fgis.SearchTypes(ctx, qq)
 				if err != nil {
 					return 0, nil, err
@@ -70,9 +70,8 @@ func (r *Registry) RegisterTypes() {
 				"returned":   len(res.Items),
 				"items":      nonNil(res.Items),
 			}
-			plan.search = res.Search
-			if sent := plan.remote(); len(sent) > 0 {
-				out["sent_to_fgis"] = sent
+			if len(res.Sent) > 0 {
+				out["sent_to_fgis"] = res.Sent
 			}
 			switch {
 			case !res.Filtered:
@@ -83,7 +82,7 @@ func (r *Registry) RegisterTypes() {
 			if res.NextStart >= 0 {
 				out["next_start"] = res.NextStart
 			}
-			if n := planNote(plan, res); n != "" {
+			if n := planNote(res); n != "" {
 				out["_note"] = n
 			}
 			return out, nil

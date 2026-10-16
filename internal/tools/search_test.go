@@ -166,6 +166,8 @@ func TestSearchVerificationsOrgWordsAnded(t *testing.T) {
 		{VRIID: "1", OrgTitle: `ООО "ЕДИНИЦА ИЗМЕРЕНИЯ"`},
 		{VRIID: "2", OrgTitle: `ФБУ "ЕДИНИЦА"`},
 		{VRIID: "3", OrgTitle: `ООО "ИЗМЕРЕНИЯ И КОНТРОЛЬ"`},
+		{VRIID: "4", OrgTitle: `ЦЕНТР ИЗМЕРЕНИЯ`},
+		{VRIID: "5", OrgTitle: `ИЗМЕРЕНИЯ-СЕРВИС`},
 	}
 	fake := &fakeFGIS{search: func(q arshin.VRIQuery) (*arshin.VRIPage, error) {
 		var hit []arshin.VRIItem
@@ -186,7 +188,8 @@ func TestSearchVerificationsOrgWordsAnded(t *testing.T) {
 	if len(out.Items) != 1 || out.Items[0].VRIID != "1" {
 		t.Errorf("нашлось %+v", out.Items)
 	}
-	if q := fake.queries[0]; fold(q.OrgTitle) != "*измерения*" {
+	// «измерения» длиннее, но встречается чаще — пробы должны выбрать «единица».
+	if q := fake.queries[len(fake.queries)-1]; fold(q.OrgTitle) != "*единица*" {
 		t.Errorf("в ФГИС ушло org_title=%q", q.OrgTitle)
 	}
 }
@@ -208,7 +211,13 @@ func TestScanBudgetGivesNextStart(t *testing.T) {
 	if out.NextStart == nil || *out.NextStart != scanPages*100 || out.Count != nil {
 		t.Errorf("next_start=%v count=%v: %s", out.NextStart, out.Count, text)
 	}
-	if len(fake.queries) != scanPages {
-		t.Errorf("запросов %d, бюджет %d", len(fake.queries), scanPages)
+	pages := 0
+	for _, q := range fake.queries {
+		if q.Rows == 100 {
+			pages++
+		}
+	}
+	if pages != scanPages {
+		t.Errorf("страниц %d, бюджет %d", pages, scanPages)
 	}
 }
